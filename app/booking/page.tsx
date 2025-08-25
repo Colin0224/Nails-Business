@@ -5,7 +5,7 @@ import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import * as z from 'zod';
 import { useRouter } from 'next/navigation';
-import { getFirestore, collection, addDoc, serverTimestamp } from 'firebase/firestore';
+import { getFirestore, collection, addDoc, serverTimestamp, doc as fsDoc, getDoc as fsGetDoc } from 'firebase/firestore';
 import { useAuth } from '@/lib/AuthContext';
 import { app } from '@/lib/firebase';
 
@@ -87,14 +87,11 @@ export default function BookingPage() {
   };
 
   useEffect(() => {
-    if (!authLoading && !user) {
-      router.push('/login');
-    }
     if (user && userData) {
       form.setValue('email', user.email || '');
       form.setValue('name', `${userData.displayName || ''}`.trim());
     }
-  }, [user, userData, authLoading, router, form]);
+  }, [user, userData, form]);
 
   // Handle technician selection
   const handleTechnicianSelect = (technician: Technician) => {
@@ -130,14 +127,40 @@ export default function BookingPage() {
     
     setIsSubmitting(true);
     try {
+      // Try to fetch user's phone number from profile for reminders
+      let customerPhone = '';
+      try {
+        const userDocSnap = await fsGetDoc(fsDoc(db, 'users', user!.uid));
+        if (userDocSnap.exists()) {
+          const udata: any = userDocSnap.data();
+          customerPhone = udata.phone || udata.phoneNumber || '';
+        }
+      } catch (_) {}
+
+      // Compute a timestamp for the appointment for reminders
+      const to24h = (t: string) => {
+        if (!t) return '00:00';
+        const m = t.match(/(\d+):(\d+)\s*(AM|PM)/i);
+        if (!m) return t; // already 24h maybe
+        let h = parseInt(m[1], 10);
+        const min = m[2];
+        const ampm = m[3].toUpperCase();
+        if (ampm === 'PM' && h !== 12) h += 12; if (ampm === 'AM' && h === 12) h = 0;
+        return `${String(h).padStart(2,'0')}:${min}`;
+      };
+      const time24 = to24h(values.time);
+      const appointmentAt = values.date ? new Date(`${values.date}T${time24}:00`) : null;
+
       // Save appointment to the selected technician's subcollection
       await addDoc(collection(db, "technicians", values.technicianId, "appointments"), {
         userId: user.uid,
         customerName: userData.displayName || values.name,
         customerEmail: values.email,
+        customerPhone,
         service: values.service,
         date: values.date,
         time: values.time,
+        appointmentAt: appointmentAt || null,
         additionalNotes: values.additionalNotes,
         technicianId: values.technicianId,
         technicianName: selectedTechnician?.name,
@@ -165,77 +188,13 @@ export default function BookingPage() {
   if (authLoading) {
     return <LoadingPage text="Loading booking page..." />;
   }
-
-  if (!user) {
-    return (
-      <ErrorDisplay
-        title="Authentication Required"
-        message="Please log in to book an appointment."
-        onRetry={() => router.push('/login')}
-        showRetry={true}
-      />
-    );
-  }
-
-  // Check if user is approved
-  if (!userData?.isApproved) {
-    return (
-      <div className="max-w-2xl mx-auto my-12 p-8 bg-white rounded-lg shadow-lg text-center">
-        <div className="mb-6">
-          <div className="w-16 h-16 bg-yellow-100 rounded-full flex items-center justify-center mx-auto mb-4">
-            <span className="text-2xl">⏳</span>
-          </div>
-          <h1 className="text-2xl font-bold text-gray-800 mb-2">Waitlist Approval Required</h1>
-          <p className="text-gray-600 mb-6">
-            Your account is currently on our waitlist for approval. You'll be able to book appointments once your account is approved.
-          </p>
-          <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4 mb-6">
-            <p className="text-yellow-800 text-sm">
-              Approval typically takes 24-48 hours. You'll receive an email notification once approved.
-            </p>
-          </div>
-          <div className="flex gap-3 justify-center">
-            <Button onClick={() => router.push('/profile')} variant="outline">
-              View Profile
-            </Button>
-            <Button onClick={() => router.push('/')} variant="default">
-              Return Home
-            </Button>
-          </div>
-        </div>
-      </div>
-    );
-  }
-
-  // Check if user has signed terms
-  if (!userData?.hasSignedTerms) {
-    return (
-      <div className="max-w-2xl mx-auto my-12 p-8 bg-white rounded-lg shadow-lg text-center">
-        <div className="mb-6">
-          <div className="w-16 h-16 bg-red-100 rounded-full flex items-center justify-center mx-auto mb-4">
-            <span className="text-2xl">📝</span>
-          </div>
-          <h1 className="text-2xl font-bold text-gray-800 mb-2">Terms of Service Required</h1>
-          <p className="text-gray-600 mb-6">
-            Please sign our Terms of Service before booking appointments. You only need to do this once.
-          </p>
-          <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 mb-6">
-            <p className="text-blue-800 text-sm">
-              Visit your profile to review and sign the Terms of Service. This signature will apply to all your future bookings.
-            </p>
-          </div>
-          <div className="flex gap-3 justify-center">
-            <Button onClick={() => router.push('/terms')} variant="default">
-              Sign Terms of Service
-            </Button>
-            <Button onClick={() => router.push('/')} variant="outline">
-              Return Home
-            </Button>
-          </div>
-        </div>
-      </div>
-    );
-  }
+  
+  const canBook = !!(user && userData?.isApproved && userData?.hasSignedTerms && !userData?.blacklisted);
+  const showNotLogged = !user;
+  const showWaitlist = !!(user && !userData?.isApproved && !userData?.blacklisted);
+  const showRejected = !!(user && userData?.verificationStatus === 'rejected');
+  const showMissingTerms = !!(user && userData && !userData.hasSignedTerms);
+  const showNoSlots = !!(selectedDate && selectedTechnician && !isFetchingSlots && availableSlots.length === 0);
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-brand-light-gray to-brand-nude py-12">
@@ -244,6 +203,36 @@ export default function BookingPage() {
           <h1 className="font-title text-4xl font-semibold text-brand-taupe mb-4 tracking-wider">Book Your Appointment</h1>
           <p className="font-body text-brand-taupe-light">Reserve your spot for professional nail artistry</p>
         </div>
+
+        {(showNotLogged || showWaitlist || showMissingTerms || showNoSlots || showRejected) && (
+          <div className="mb-6 space-y-2">
+            {showNotLogged && (
+              <div className="rounded-lg border border-blue-200 bg-blue-50 p-3 text-blue-800 text-sm">
+                You can browse availability without logging in. Log in to request an appointment.
+              </div>
+            )}
+            {showWaitlist && (
+              <div className="rounded-lg border border-yellow-200 bg-yellow-50 p-3 text-yellow-800 text-sm">
+                You are on the waitlist. You can view the calendar, but booking is disabled until approval.
+              </div>
+            )}
+            {showRejected && (
+              <div className="rounded-lg border border-red-200 bg-red-50 p-3 text-red-800 text-sm">
+                Client capacity is currently full and we’re unable to accept new appointments for this account.
+              </div>
+            )}
+            {showMissingTerms && (
+              <div className="rounded-lg border border-red-200 bg-red-50 p-3 text-red-800 text-sm">
+                Please sign the Terms of Service in your profile to enable booking.
+              </div>
+            )}
+            {showNoSlots && (
+              <div className="rounded-lg border border-gray-200 bg-gray-50 p-3 text-gray-700 text-sm">
+                No times available for the selected date. Please choose another date.
+              </div>
+            )}
+          </div>
+        )}
 
         <Form {...form}>
           <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-6">
@@ -370,7 +359,8 @@ export default function BookingPage() {
             <Button
               type="submit"
               className="w-full bg-brand-taupe hover:bg-brand-taupe-dark text-brand-cream border-0 py-3 rounded-full font-semibold text-lg transition-all duration-300 transform hover:scale-105 shadow-lg"
-              disabled={isSubmitting}
+              disabled={isSubmitting || !canBook}
+              title={!canBook ? "Booking is disabled until you are approved and have signed the terms." : undefined}
             >
               {isSubmitting ? (
                 <>

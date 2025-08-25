@@ -21,7 +21,6 @@ A full-stack web application for YVD Nails salon, allowing customers to book app
 - Classic Manicure
 - Gel-X Extensions
 - Spa Pedicure
-- Eyelash Extensions
 
 ## 🛠 Tech Stack
 
@@ -61,7 +60,7 @@ A full-stack web application for YVD Nails salon, allowing customers to book app
    NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET=your_project.appspot.com
    NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID=123456789
    NEXT_PUBLIC_FIREBASE_APP_ID=1:123456789:web:abcdef123456
-   NEXT_PUBLIC_ADMIN_UID=your_admin_user_id
+   # NEXT_PUBLIC_ADMIN_UID is no longer needed - admin validation is now server-side
    ```
 
 4. **Firebase Setup**
@@ -175,7 +174,7 @@ Edit the services array in `/app/booking/page.tsx` to modify available services.
    - Ensure Firestore and Auth are enabled
 
 2. **Admin Access Denied**
-   - Verify `NEXT_PUBLIC_ADMIN_UID` matches your user ID
+   - Admin access is now controlled server-side via secure API routes
    - Check user authentication status
 
 3. **Build Errors**
@@ -209,7 +208,7 @@ For technical support or questions, contact the development team.
 
 ---
 
-**YVD Nails** - Premium Eyelashes & Nail Artistry
+**YVD Nails** - Premium Nail Artistry
 - [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
 
 You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!

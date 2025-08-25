@@ -143,7 +143,8 @@ export default function AdminPage() {
         const userEmail = userData.email?.toLowerCase() || '';
         
         // Check if user is not verified/approved AND not an admin
-        if (!userData.isVerified && !userData.isApproved && !adminEmails.has(userEmail)) {
+        const isRejected = userData.verificationStatus === 'rejected' || userData.blacklisted === true;
+        if (!userData.isVerified && !userData.isApproved && !adminEmails.has(userEmail) && !isRejected) {
           unapprovedUsers.push({
             id: doc.id,
             userId: doc.id,
@@ -250,13 +251,20 @@ export default function AdminPage() {
 
   const handleApproveUser = async (approval: PendingApproval, approved: boolean) => {
     try {
-      // Update user document
-      await updateDoc(doc(db, 'users', approval.userId), {
+      // Update user document (also write reapplyAfter when rejected)
+      const userRef = doc(db, 'users', approval.userId);
+      const payload: any = {
         isVerified: approved,
-        isApproved: approved, // Add this field for consistency
+        isApproved: approved,
         verificationStatus: approved ? 'approved' : 'rejected',
         verifiedAt: approved ? new Date() : null,
-      });
+      };
+      if (!approved) {
+        // Permanently reject: flag the account as blacklisted
+        payload.blacklisted = true;
+        payload.blacklistedAt = new Date();
+      }
+      await updateDoc(userRef, payload);
 
       // Update pending verification record if it exists
       try {
@@ -273,7 +281,7 @@ export default function AdminPage() {
         console.log('No pendingVerifications record to update (user signed up through regular flow)');
       }
 
-      toast.success(approved ? 'User approved successfully' : 'User rejected successfully');
+      toast.success(approved ? 'User approved successfully' : 'User rejected permanently. They will be notified and cannot reapply.');
       
       await loadPendingApprovals();
     } catch (error) {
@@ -478,14 +486,8 @@ export default function AdminPage() {
     return <LoadingPage text="Redirecting to login..." />;
   }
 
-  // Check if user is admin using Firebase UID from environment
-  const ADMIN_UID = process.env.NEXT_PUBLIC_ADMIN_UID;
-  
-  // Temporary: Log user UID to console for setup
-  console.log('Current user UID:', user?.uid);
-  console.log('Admin UID from env:', ADMIN_UID);
-  
-  if (!userData || !ADMIN_UID || user.uid !== ADMIN_UID) {
+  // Check if user is admin using secure server-side validation
+  if (!userData?.isAdmin) {
     return (
       <div className="min-h-screen bg-gray-50 flex items-center justify-center">
         <div className="text-center">
@@ -1255,6 +1257,8 @@ export default function AdminPage() {
             </Card>
           </div>
         )}
+
+        
       </div>
 
       <ConfirmationDialog

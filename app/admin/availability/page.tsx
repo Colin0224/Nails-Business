@@ -12,11 +12,10 @@ import { Calendar } from "@/components/ui/calendar";
 import { Toaster, toast } from 'sonner';
 import { format } from "date-fns";
 
-// Get the Admin UID from the environment variables
-const ADMIN_UID = process.env.NEXT_PUBLIC_ADMIN_UID;
+// Admin validation is now handled by AuthContext
 
 export default function AvailabilityPage() {
-    const { user, loading } = useAuth();
+    const { user, userData, loading } = useAuth();
     const router = useRouter();
     const db = getFirestore(app);
 
@@ -43,13 +42,13 @@ export default function AvailabilityPage() {
         fetchAvailability();
     }, [selectedDate, db]);
     
-    // Page Protection using the correct ADMIN_UID from .env.local
+    // Page Protection using secure server-side admin validation
     useEffect(() => {
-        if (!loading && (!user || user.uid !== ADMIN_UID)) {
+        if (!loading && (!user || !userData?.isAdmin)) {
             toast.error("Access Denied");
             router.push('/');
         }
-    }, [user, loading, router]);
+    }, [user, userData, loading, router]);
 
 
     const addTimeSlot = () => {
@@ -81,7 +80,7 @@ export default function AvailabilityPage() {
         }
     };
     
-    if (loading || !user || user.uid !== ADMIN_UID) {
+    if (loading || !user || !userData?.isAdmin) {
         return <p className="text-center mt-20">Verifying access...</p>;
     }
 

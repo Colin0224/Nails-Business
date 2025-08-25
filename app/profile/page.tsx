@@ -6,7 +6,9 @@ import { zodResolver } from '@hookform/resolvers/zod';
 import * as z from 'zod';
 import { useRouter } from 'next/navigation';
 import { getFirestore, doc, getDoc, setDoc, updateDoc, collection, query, where, getDocs } from 'firebase/firestore';
-import { app } from '@/lib/firebase';
+import { app, storage } from '@/lib/firebase';
+import { getDownloadURL, ref, uploadBytes } from 'firebase/storage';
+import Image from 'next/image';
 import { useAuth } from '@/lib/AuthContext';
 
 import { Button } from '@/components/ui/button';
@@ -79,6 +81,8 @@ export default function ProfilePage() {
   const [userReviews, setUserReviews] = useState<Review[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isUploadingAvatar, setIsUploadingAvatar] = useState(false);
+  const [avatarUrl, setAvatarUrl] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<'profile' | 'waitlist' | 'terms' | 'appointments' | 'loyalty' | 'reviews'>('profile');
   const [showTerms, setShowTerms] = useState(false);
   const [digitalSignature, setDigitalSignature] = useState('');
@@ -129,6 +133,7 @@ export default function ProfilePage() {
       const userDoc = await getDoc(doc(db, 'users', user.uid));
       if (userDoc.exists()) {
         const data = userDoc.data();
+        if ((data as any).photoURL) setAvatarUrl((data as any).photoURL);
         form.reset({
           firstName: data.firstName || '',
           lastName: data.lastName || '',
@@ -140,6 +145,32 @@ export default function ProfilePage() {
     } catch (error) {
       console.error('Error loading profile:', error);
     }
+  };
+
+  const onChooseAvatar = () => {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = 'image/*';
+    input.onchange = async (e: any) => {
+      const file = e.target.files?.[0];
+      if (!file || !user) return;
+      setIsUploadingAvatar(true);
+      try {
+        const path = `avatars/${user.uid}_${Date.now()}_${file.name}`;
+        const fileRef = ref(storage, path);
+        await uploadBytes(fileRef, file);
+        const url = await getDownloadURL(fileRef);
+        await setDoc(doc(db, 'users', user.uid), { photoURL: url }, { merge: true });
+        setAvatarUrl(url);
+        toast.success('Profile photo updated');
+      } catch (err) {
+        console.error(err);
+        toast.error('Failed to upload photo');
+      } finally {
+        setIsUploadingAvatar(false);
+      }
+    };
+    input.click();
   };
 
   const loadAppointments = async () => {
@@ -250,6 +281,8 @@ export default function ProfilePage() {
       return <Badge variant="default" className="bg-purple-500 text-white">Admin ⭐</Badge>;
     } else if (userData.isApproved) {
       return <Badge variant="default" className="bg-green-500 text-white">Member ✓</Badge>;
+    } else if (userData.verificationStatus === 'rejected') {
+      return <Badge variant="destructive">Rejected</Badge>;
     } else {
       return <Badge variant="secondary" className="bg-yellow-500 text-white">On Waitlist</Badge>;
     }
@@ -268,9 +301,18 @@ export default function ProfilePage() {
       <Toaster />
       <div className="max-w-4xl mx-auto">
         <div className="flex items-center justify-between mb-6">
-          <div>
-            <h1 className="text-3xl font-bold text-gray-800">My Profile</h1>
-            <p className="text-gray-600">Manage your account and preferences</p>
+          <div className="flex items-center gap-4">
+            <div className="relative w-16 h-16 md:w-20 md:h-20 rounded-full overflow-hidden bg-gray-100 border">
+              {avatarUrl ? (
+                <Image src={avatarUrl} alt="Profile photo" fill style={{objectFit:'cover'}} />
+              ) : (
+                <div className="w-full h-full flex items-center justify-center text-gray-400 text-sm">No Photo</div>
+              )}
+            </div>
+            <div>
+              <h1 className="text-3xl font-bold text-gray-800">My Profile</h1>
+              <p className="text-gray-600">Manage your account and preferences</p>
+            </div>
           </div>
           <div className="flex gap-2">
             {getWaitlistStatusBadge()}
@@ -306,7 +348,12 @@ export default function ProfilePage() {
         <Card className="p-6">
           {activeTab === 'profile' && (
             <div>
-              <h2 className="text-xl font-semibold mb-4">Profile Information</h2>
+              <div className="flex items-center justify-between mb-4">
+                <h2 className="text-xl font-semibold">Profile Information</h2>
+                <Button variant="outline" size="sm" onClick={onChooseAvatar} disabled={isUploadingAvatar}>
+                  {isUploadingAvatar ? 'Uploading...' : 'Change Photo'}
+                </Button>
+              </div>
               <Form {...form}>
                 <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4">
                   <div className="grid md:grid-cols-2 gap-4">
@@ -430,6 +477,16 @@ export default function ProfilePage() {
                     <Link href="/booking" className="inline-block mt-2">
                       <Button size="sm">Book an Appointment</Button>
                     </Link>
+                  </div>
+                ) : userData?.verificationStatus === 'rejected' ? (
+                  <div className="bg-red-50 border border-red-200 rounded-lg p-4">
+                    <h3 className="font-medium text-red-800 mb-2">Application Not Approved</h3>
+                    <p className="text-red-700 mb-2">
+                      We appreciate your interest. At this time, client capacity is full and we’re unable to accept new appointments. We aren’t accepting reapplications for this account.
+                    </p>
+                    {userData?.blacklisted && (
+                      <p className="text-sm text-red-600">Reapplication is currently unavailable.</p>
+                    )}
                   </div>
                 ) : (
                   <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4">

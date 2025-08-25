@@ -4,6 +4,7 @@ import { createContext, useContext, useEffect, useState, ReactNode } from 'react
 import { getAuth, onAuthStateChanged, User } from 'firebase/auth';
 import { getFirestore, doc, getDoc } from 'firebase/firestore';
 import { app } from '@/lib/firebase';
+// Removed validateAdmin import - using direct UID check instead
 
 // Define the shape of user data
 interface UserData {
@@ -15,6 +16,9 @@ interface UserData {
   approvedAt?: Date;
   hasSignedTerms: boolean;
   termsSignedAt?: Date;
+  verificationStatus?: 'pending' | 'approved' | 'rejected';
+  reapplyAfter?: Date;
+  blacklisted?: boolean;
 }
 
 // Define the shape of the context data
@@ -50,38 +54,14 @@ export function AuthProvider({ children }: AuthProviderProps) {
       const userDocRef = doc(db, 'users', currentUser.uid);
       const userDoc = await getDoc(userDocRef);
       
-      // Check if user is a technician/admin
-      let isAdmin = false;
-      try {
-        // First check by UID
-        const techniciansQuery = await getDoc(doc(db, 'technicians', currentUser.uid));
-        if (techniciansQuery.exists()) {
-          isAdmin = true;
-        } else if (currentUser.email) {
-          // Check by email if not found by UID
-          const { query, collection, where, getDocs } = await import('firebase/firestore');
-          const techniciansRef = collection(db, 'technicians');
-          const emailQuery = query(techniciansRef, where('email', '==', currentUser.email));
-          const emailResults = await getDocs(emailQuery);
-          isAdmin = !emailResults.empty;
-        }
-        
-        // TEMPORARY: If no technician record exists for this email, but we know it should be admin
-        // (for migration purposes), create a basic admin flag based on email
-        if (!isAdmin && currentUser.email) {
-          // Add known admin emails here for migration
-          const knownAdminEmails = [
-            'jigmetondup@gmail.com', // Add your admin email here
-            'admin@yvdnails.com',    // Default admin email
-            // Add other admin emails as needed
-          ];
-          isAdmin = knownAdminEmails.includes(currentUser.email.toLowerCase());
-        }
-        
-        } catch (error) {
-        // Could not check admin status - continue as regular user
-        isAdmin = false;
-      }      if (userDoc.exists()) {
+      // Check if user is admin using hardcoded UIDs (secure client-side check)
+      const ADMIN_UIDS = [
+        'IrEAgqbRrfZf77QaAt0jw8YuTd63',
+        'TNrQzvNsBwYqiwRl57RsAlGNW0h2'
+      ];
+      const isAdmin = ADMIN_UIDS.includes(currentUser.uid);
+      
+      if (userDoc.exists()) {
         const data = userDoc.data();
         const userIsApproved = data.isVerified || data.isApproved || false;
         
@@ -95,6 +75,9 @@ export function AuthProvider({ children }: AuthProviderProps) {
           approvedAt: data.verifiedAt?.toDate() || data.approvedAt?.toDate(),
           hasSignedTerms: data.hasSignedTerms || false,
           termsSignedAt: data.termsSignedAt?.toDate(),
+          verificationStatus: data.verificationStatus || (userIsApproved ? 'approved' : 'pending'),
+          reapplyAfter: data.reapplyAfter ? data.reapplyAfter.toDate?.() ?? data.reapplyAfter : undefined,
+          blacklisted: data.blacklisted || false,
         });
       } else {
         // Default user data if document doesn't exist

@@ -2,64 +2,102 @@
 
 import Image from "next/image";
 import Link from "next/link";
-import { useState } from "react";
+import { useRouter } from 'next/navigation';
+import { useRef, useState, useCallback, useEffect } from "react";
 import { useAuth } from '@/lib/AuthContext';
+import { flushSync } from 'react-dom';
+import LoadingSpinner from './components/LoadingSpinner';
 import ServiceCard from './components/ServiceCard';
+import ServiceTiers from './components/ServiceTiers';
 import Slideshow from './components/Slideshow';
+
+import { getFirestore, collection, getDocs, orderBy, query, doc, setDoc, getDoc } from 'firebase/firestore';
+import { app, storage } from '@/lib/firebase';
+import { getDownloadURL, ref, uploadBytes } from 'firebase/storage';
 import ReviewForm from './components/ReviewForm';
 
 export default function Home() {
-  const { user } = useAuth();
+  const { user, userData } = useAuth();
+  const router = useRouter();
   const [showReviewForm, setShowReviewForm] = useState(false);
 
-  // Define your services data
+  // Fade overlay state
+  const [overlayVisible, setOverlayVisible] = useState(false);
+  const [overlayOpaque, setOverlayOpaque] = useState(false);
+  const fadeMinDurationMs = 1300;
+  const overlayTransitionMs = 700;
+  const overlayPreNavDelayMs = 800;
+  const fadeStartAtRef = useRef<number | null>(null);
+  const fadeClearTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Fade navigation function
+  const navigateWithFade = useCallback((path: string) => {
+    flushSync(() => {
+      setOverlayVisible(true);
+      setOverlayOpaque(true); // Instant full opacity
+      fadeStartAtRef.current = Date.now();
+    });
+    setTimeout(() => {
+      router.push(path);
+    }, overlayPreNavDelayMs);
+  }, [router]);
+
+  // Clear overlay after navigation
+  useEffect(() => {
+    if (!overlayVisible) return;
+    const startedAt = fadeStartAtRef.current ?? Date.now();
+    const elapsed = Date.now() - startedAt;
+    const remaining = Math.max(fadeMinDurationMs - elapsed, 0);
+    if (fadeClearTimerRef.current) clearTimeout(fadeClearTimerRef.current);
+    fadeClearTimerRef.current = setTimeout(() => {
+      setOverlayOpaque(false);
+      setTimeout(() => {
+        setOverlayVisible(false);
+        fadeStartAtRef.current = null;
+      }, overlayTransitionMs);
+    }, remaining);
+    return () => {
+      if (fadeClearTimerRef.current) clearTimeout(fadeClearTimerRef.current);
+    };
+  }, [overlayVisible]);
+
+  // Define all services (Design + GELX)
   const services = [
     {
-      name: "Design Tier 1",
-      description: "Classic nail artistry with elegant simplicity - Basic nail art, single color design, cuticle care, base & top coat",
-      price: "$70"
+      name: "Tier 1",
+      description: "Classic artistry or basic GELX styling – single color, cuticle care, base & top coat",
+      prices: [
+        { label: "Design", value: "$70" },
+        { label: "GELX", value: "$85" }
+      ]
     },
     {
-      name: "Design Tier 2", 
-      description: "Enhanced designs with artistic flair - Two-tone designs, simple patterns, French tips, nail strengthening",
-      price: "$80"
+      name: "Tier 2",
+      description: "Enhanced designs – two‑tone, simple patterns, French tips, strengthening",
+      prices: [
+        { label: "Design", value: "$80" },
+        { label: "GELX", value: "$95" }
+      ]
     },
     {
-      name: "Design Tier 3",
-      description: "Premium artistry with intricate details - Complex patterns, hand-painted art, texture work, premium products",
-      price: "$90"
+      name: "Tier 3",
+      description: "Premium artistry – complex patterns, hand‑painted details, texture work",
+      prices: [
+        { label: "Design", value: "$90" },
+        { label: "GELX", value: "$105" }
+      ]
     },
     {
-      name: "Design Tier 4",
-      description: "Master-level artistry for special occasions - 3D nail art, crystal embellishments, custom designs, luxury treatment",
-      price: "$100"
+      name: "Tier 4",
+      description: "Master‑level – 3D art, crystals, custom designs, luxury treatment",
+      prices: [
+        { label: "Design", value: "$100" },
+        { label: "GELX", value: "$115" }
+      ]
     }
   ];
 
-  const gelxServices = [
-    {
-      name: "GELX Tier 1",
-      description: "Professional GELX extensions with basic styling - GELX application, length customization, basic shaping, single color finish",
-      price: "$85"
-    },
-    {
-      name: "GELX Tier 2",
-      description: "Enhanced GELX with artistic elements - Premium GELX tips, two-tone designs, simple nail art, strengthening treatment", 
-      price: "$95"
-    },
-    {
-      name: "GELX Tier 3",
-      description: "Advanced GELX artistry with premium finishes - Complex designs, texture application, hand-painted details, luxury care",
-      price: "$105"
-    },
-    {
-      name: "GELX Tier 4", 
-      description: "Master-level GELX for ultimate luxury - 3D embellishments, custom artwork, premium materials, VIP experience",
-      price: "$115"
-    }
-  ];
-
-  const galleryImages = [
+  const [galleryImages, setGalleryImages] = useState([
     { src: '/1.jpg', alt: 'Elegant nude nail design with gold accents', name: 'Golden Touch' },
     { src: '/2.jpg', alt: 'Vibrant pink gradient nails', name: 'Sunset Blush' },
     { src: '/3.jpg', alt: 'Sophisticated black and white nail art', name: 'Monochrome Magic' },
@@ -68,79 +106,157 @@ export default function Home() {
     { src: '/6.jpg', alt: 'Trendy pink chrome nails', name: 'Rose Gold' },
     { src: '/7.jpg', alt: 'Intricate blue nail designs', name: 'Ocean Waves' },
     { src: '/8.jpg', alt: 'A classic, glossy red manicure', name: 'Cherry Blossom' }
-  ];
+  ]);
+
+  // Admin inline editing: replace hero or gallery images
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const [pendingReplaceIndex, setPendingReplaceIndex] = useState<number | null>(null);
+  const [replaceTarget, setReplaceTarget] = useState<'hero' | 'gallery' | null>(null);
+  const [isUploading, setIsUploading] = useState(false);
+  const [heroUrl, setHeroUrl] = useState<string | null>(null);
+
+  const replaceGalleryImage = (index: number) => {
+    if (!userData?.isAdmin) return;
+    setReplaceTarget('gallery');
+    setPendingReplaceIndex(index);
+    fileInputRef.current?.click();
+  };
+
+  const replaceHeroImage = () => {
+    if (!userData?.isAdmin) return;
+    setReplaceTarget('hero');
+    setPendingReplaceIndex(null);
+    fileInputRef.current?.click();
+  };
+
+  const onFileSelected = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file || !replaceTarget) return;
+    try {
+      setIsUploading(true);
+      const path = `${replaceTarget}/${Date.now()}_${file.name}`;
+      const fileRef = ref(storage, path);
+      await uploadBytes(fileRef, file);
+      const url = await getDownloadURL(fileRef);
+      const db = getFirestore(app);
+      const name = file.name.replace(/\.[^.]+$/, '');
+      if (replaceTarget === 'hero') {
+        await setDoc(doc(db, 'settings', 'site'), { heroUrl: url }, { merge: true });
+        setHeroUrl(url);
+      } else if (replaceTarget === 'gallery' && pendingReplaceIndex !== null) {
+        // Persist replacement by creating/overwriting a doc with the same order index
+        await setDoc(doc(db, 'gallery', `order_${pendingReplaceIndex}`), {
+          url,
+          alt: name,
+          name,
+          order: pendingReplaceIndex + 1,
+          storagePath: path,
+        });
+        setGalleryImages((prev) => prev.map((img, i) => i === pendingReplaceIndex ? { src: url, alt: name, name } : img));
+      }
+    } finally {
+      setIsUploading(false);
+      setPendingReplaceIndex(null);
+      setReplaceTarget(null);
+      if (fileInputRef.current) fileInputRef.current.value = '';
+    }
+  };
+
+  useEffect(() => {
+    const loadGallery = async () => {
+      try {
+        const db = getFirestore(app);
+        // Load hero first
+        const settingsDoc = await getDoc(doc(db, 'settings', 'site'));
+        const hero = settingsDoc.exists() ? (settingsDoc.data() as any).heroUrl : null;
+        if (hero) setHeroUrl(hero);
+        const q = query(collection(db, 'gallery'), orderBy('order', 'asc'));
+        const snap = await getDocs(q);
+        const list = snap.docs.map((d) => d.data() as any);
+        if (list.length > 0) {
+          setGalleryImages(list.map((i) => ({ src: i.url, alt: i.alt || i.name, name: i.name })));
+        }
+      } catch (e) {
+        // ignore, fallback to local images
+      }
+    };
+    loadGallery();
+  }, []);
 
   return (
-    <main className="bg-brand-cream text-brand-taupe">
+    <>
+      <main className="bg-brand-cream text-brand-taupe">
       {/* Hero Section */}
       <section className="relative h-[70vh] flex items-center justify-center text-center text-white overflow-hidden">
         <div className="absolute inset-0 bg-gradient-to-br from-brand-pink-soft/20 to-brand-dusty-pink/30 z-10"></div>
         <Image
-          src="/hero-image.jpg"
+          src={heroUrl || "/image2.png"}
           alt="Beautifully manicured nails"
           layout="fill"
           objectFit="cover"
-          className="brightness-90"
+          className="brightness-90 blur-sm"
         />
+        {userData?.isAdmin && (
+          <button
+            type="button"
+            onClick={replaceHeroImage}
+            className="absolute top-4 right-4 z-30 flex items-center gap-2 bg-rose-600/90 hover:bg-rose-700 text-white rounded-full px-4 py-2 text-sm font-medium shadow-lg"
+            aria-label="Change banner photo"
+            title="Change banner photo"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 1 1 3 3L7 19l-4 1 1-4Z"/></svg>
+            Change banner photo
+          </button>
+        )}
         <div className="relative z-20 p-6 max-w-4xl mx-auto">
           <h1 className="font-title text-6xl md:text-8xl font-semibold mb-6 text-brand-taupe drop-shadow-sm tracking-widest">
             YVD NAILS
           </h1>
           <p className="font-body text-xl md:text-2xl mb-4 text-brand-taupe-dark/90 drop-shadow-sm font-light tracking-wide">
-            Premium Eyelashes & Nail Artistry
+            Premium Nail Artistry
           </p>
           <p className="script-text text-lg md:text-xl mb-8 text-brand-sage/80 italic">
             Where beauty meets precision
           </p>
-          <Link href="/booking" className="inline-block bg-brand-taupe hover:bg-brand-taupe-dark text-brand-cream px-8 py-4 rounded-full font-semibold text-lg transition-all duration-300 transform hover:scale-105 shadow-lg">
+          <button
+            onClick={() => navigateWithFade('/booking')}
+            className="inline-block bg-brand-taupe hover:bg-brand-taupe-dark text-brand-cream px-8 py-4 rounded-full font-semibold text-lg transition-all duration-300 transform hover:scale-105 shadow-lg"
+          >
             Book Now
-          </Link>
+          </button>
         </div>
       </section>
 
-      {/* Design Tiers Section */}
-      <section id="services" className="py-20 px-4 bg-gradient-to-b from-brand-cream to-brand-light-gray text-center">
-        <div className="max-w-6xl mx-auto">
-          <h2 className="font-title text-4xl md:text-5xl font-semibold mb-4 text-brand-taupe tracking-wider">Design Tiers</h2>
-          <p className="font-body text-lg text-brand-taupe-light mb-12 max-w-2xl mx-auto font-light">
-            Choose from our carefully crafted tiers of nail artistry, each designed to deliver exceptional beauty and precision
-          </p>
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-8">
-            {services.map((service, index) => (
-              <ServiceCard key={index} service={service} />
-            ))}
-          </div>
-        </div>
-      </section>
-
-      {/* GELX Extensions Section */}
-      <section id="gelx" className="py-20 px-4 bg-gradient-to-b from-brand-light-gray to-brand-pink-soft text-center">
-        <div className="max-w-6xl mx-auto">
-          <h2 className="font-title text-4xl md:text-5xl font-semibold mb-4 text-brand-taupe tracking-wider">GELX Extensions</h2>
-          <p className="font-body text-lg text-brand-taupe-light mb-12 max-w-2xl mx-auto font-light">
-            Professional GELX gel extensions for length, strength, and stunning artistry that lasts
-          </p>
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-8">
-            {gelxServices.map((service, index) => (
-              <ServiceCard key={index} service={service} />
-            ))}
-          </div>
-        </div>
+      {/* Services Section (redesigned) */}
+      <section id="services" className="py-20 px-4 bg-gradient-to-b from-brand-cream to-brand-light-gray text-center scroll-mt-24">
+        <ServiceTiers onBook={(path) => navigateWithFade(path)} />
       </section>
 
       {/* Gallery Section with Slideshow */}
-      <section id="gallery" className="py-20 px-4 bg-gradient-to-b from-brand-pink-soft to-brand-cream text-center">
+      <section id="gallery" className="py-20 px-4 bg-gradient-to-b from-brand-pink-soft to-brand-cream text-center scroll-mt-24">
         <div className="max-w-6xl mx-auto">
-          <h2 className="font-title text-4xl md:text-5xl font-semibold mb-4 text-brand-taupe tracking-wider">Portfolio</h2>
+          <div className="flex items-center justify-between mb-4">
+            <h2 className="font-title text-4xl md:text-5xl font-semibold text-brand-taupe tracking-wider">Portfolio</h2>
+            {/* Admin quick-edit input (hidden) and note */}
+            {user && (
+              <span className="hidden md:inline text-xs text-brand-taupe-light">{isUploading ? 'Uploading...' : ''}</span>
+            )}
+          </div>
           <p className="font-body text-lg text-brand-taupe-light mb-12 max-w-2xl mx-auto font-light">
             Explore our artistry through stunning nail designs and transformations
           </p>
-          <Slideshow images={galleryImages} />
+          <Slideshow
+            images={galleryImages}
+            editable={!!user}
+            onReplace={replaceGalleryImage}
+          />
+          {/* Hidden file input for replacing gallery images */}
+          <input ref={fileInputRef} type="file" accept="image/*" className="hidden" onChange={onFileSelected} />
         </div>
       </section>
 
       {/* Customer Reviews Section */}
-      <section id="reviews" className="py-20 px-4 bg-gradient-to-br from-brand-light-gray to-brand-nude">
+      <section id="reviews" className="py-20 px-4 bg-gradient-to-br from-brand-light-gray to-brand-nude scroll-mt-24">
         <div className="max-w-6xl mx-auto text-center">
           <h2 className="font-title text-4xl md:text-5xl font-semibold mb-4 text-brand-taupe tracking-wider">
             What Our Clients Say
@@ -204,11 +320,12 @@ export default function Home() {
             
             {!showReviewForm ? (
               <div className="flex flex-col sm:flex-row gap-4 justify-center">
-                <Link href="/booking" className="inline-block">
-                  <button className="bg-brand-taupe hover:bg-brand-taupe-dark text-brand-cream px-8 py-4 rounded-full font-semibold text-lg transition-all duration-300 transform hover:scale-105 shadow-lg">
-                    Book Your Appointment
-                  </button>
-                </Link>
+                <button
+                  onClick={() => navigateWithFade('/booking')}
+                  className="bg-brand-taupe hover:bg-brand-taupe-dark text-brand-cream px-8 py-4 rounded-full font-semibold text-lg transition-all duration-300 transform hover:scale-105 shadow-lg"
+                >
+                  Book Your Appointment
+                </button>
                 {user && (
                   <button 
                     onClick={() => setShowReviewForm(true)}
@@ -218,11 +335,12 @@ export default function Home() {
                   </button>
                 )}
                 {!user && (
-                  <Link href="/login" className="inline-block">
-                    <button className="border-2 border-brand-taupe text-brand-taupe hover:bg-brand-taupe hover:text-brand-cream px-8 py-4 rounded-full font-semibold text-lg transition-all duration-300 transform hover:scale-105">
-                      Login to Review
-                    </button>
-                  </Link>
+                  <button
+                    onClick={() => navigateWithFade('/login')}
+                    className="border-2 border-brand-taupe text-brand-taupe hover:bg-brand-taupe hover:text-brand-cream px-8 py-4 rounded-full font-semibold text-lg transition-all duration-300 transform hover:scale-105"
+                  >
+                    Login to Review
+                  </button>
                 )}
               </div>
             ) : (
@@ -240,6 +358,14 @@ export default function Home() {
           </div>
         </div>
       </section>
-    </main>
+      </main>
+
+      {/* Fade overlay for navigation */}
+      {overlayVisible && (
+        <div className={`fixed inset-0 z-[60] bg-white flex items-center justify-center ${overlayOpaque ? 'opacity-100' : 'opacity-0'}`}>
+          <LoadingSpinner size="md" />
+        </div>
+      )}
+    </>
   );
 }

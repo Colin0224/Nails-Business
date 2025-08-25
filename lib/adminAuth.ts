@@ -1,47 +1,170 @@
-import { getFirestore, doc, getDoc, query, collection, where, getDocs } from 'firebase/firestore';
+import { getAuth } from 'firebase/auth';
 import { app } from './firebase';
 
-const db = getFirestore(app);
-
-export interface AdminSession {
-  technicianId: string;
-  technician: any;
-  isOwner: boolean; // If they can manage other technicians
+/**
+ * Get Firebase ID token for API authentication
+ */
+async function getIdToken(): Promise<string | null> {
+  const auth = getAuth(app);
+  const user = auth.currentUser;
+  if (!user) return null;
+  
+  try {
+    return await user.getIdToken();
+  } catch (error) {
+    console.error('Failed to get ID token:', error);
+    return null;
+  }
 }
 
-export const getAdminSession = async (userEmail: string): Promise<AdminSession | null> => {
+/**
+ * Validate if the current user is an admin using server-side validation
+ * @returns Promise<boolean> - true if user is admin, false otherwise
+ */
+export async function validateAdmin(): Promise<boolean> {
   try {
-    // Find technician by email
-    const techniciansRef = collection(db, 'technicians');
-    const q = query(techniciansRef, where('email', '==', userEmail), where('isActive', '==', true));
-    const querySnapshot = await getDocs(q);
+    const idToken = await getIdToken();
+    if (!idToken) return false;
     
-    if (!querySnapshot.empty) {
-      const technicianDoc = querySnapshot.docs[0];
-      const technicianData = technicianDoc.data();
-      
+    const response = await fetch('/api/admin/validate', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${idToken}`,
+        'Content-Type': 'application/json',
+      },
+    });
+    
+    if (!response.ok) return false;
+    
+    const data = await response.json();
+    return data.isAdmin || false;
+  } catch (error) {
+    console.error('Admin validation failed:', error);
+    return false;
+  }
+}
+
+/**
+ * Get comprehensive admin status and user data
+ * @returns Promise<AdminStatusResult>
+ */
+export interface AdminStatusResult {
+  isAdmin: boolean;
+  uid: string;
+  userData: any;
+  hasUserDoc: boolean;
+  error?: string;
+}
+
+export async function getAdminStatus(): Promise<AdminStatusResult> {
+  try {
+    const idToken = await getIdToken();
+    if (!idToken) {
       return {
-        technicianId: technicianDoc.id,
-        technician: {
-          id: technicianDoc.id,
-          ...technicianData,
-          joinedDate: technicianData.joinedDate?.toDate() || new Date()
-        },
-        isOwner: technicianData.isOwner || false
+        isAdmin: false,
+        uid: '',
+        userData: null,
+        hasUserDoc: false,
+        error: 'Not authenticated'
       };
     }
     
-    return null;
+    const response = await fetch('/api/admin/validate', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${idToken}`,
+        'Content-Type': 'application/json',
+      },
+    });
+    
+    if (!response.ok) {
+      return {
+        isAdmin: false,
+        uid: '',
+        userData: null,
+        hasUserDoc: false,
+        error: 'Failed to validate admin status'
+      };
+    }
+    
+    const data = await response.json();
+    return {
+      isAdmin: data.isAdmin || false,
+      uid: data.uid || '',
+      userData: null, // We'll get this from AuthContext instead
+      hasUserDoc: false,
+      error: data.error
+    };
   } catch (error) {
-    console.error('Error getting admin session:', error);
-    return null;
+    console.error('Failed to get admin status:', error);
+    return {
+      isAdmin: false,
+      uid: '',
+      userData: null,
+      hasUserDoc: false,
+      error: error instanceof Error ? error.message : 'Unknown error'
+    };
   }
-};
+}
 
-export const requireAdmin = async (userEmail: string): Promise<AdminSession> => {
-  const session = await getAdminSession(userEmail);
-  if (!session) {
-    throw new Error('Access denied: Admin privileges required');
+/**
+ * Perform admin operations through secure cloud function
+ * @param operation - The operation to perform
+ * @param data - Operation-specific data
+ * @returns Promise<{success: boolean, message: string}>
+ */
+export async function performAdminOperation(
+  operation: string, 
+  data: any
+): Promise<{success: boolean, message: string}> {
+  try {
+    const idToken = await getIdToken();
+    if (!idToken) {
+      throw new Error('Not authenticated');
+    }
+    
+    const response = await fetch('/api/admin/operations', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${idToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ operation, data }),
+    });
+    
+    const result = await response.json();
+    
+    if (!response.ok) {
+      throw new Error(result.error || 'Operation failed');
+    }
+    
+    return result;
+  } catch (error) {
+    console.error('Admin operation failed:', error);
+    throw error;
   }
-  return session;
-};
+}
+
+/**
+ * Helper function to update user approval status
+ * @param targetUid - UID of user to update
+ * @param approved - Whether to approve or reject
+ * @returns Promise<{success: boolean, message: string}>
+ */
+export async function updateUserApprovalStatus(
+  targetUid: string, 
+  approved: boolean
+): Promise<{success: boolean, message: string}> {
+  return performAdminOperation('updateUserStatus', { targetUid, approved });
+}
+
+/**
+ * Helper function to delete appointment
+ * @param appointmentId - ID of appointment to delete
+ * @returns Promise<{success: boolean, message: string}>
+ */
+export async function deleteAppointmentSecure(
+  appointmentId: string
+): Promise<{success: boolean, message: string}> {
+  return performAdminOperation('deleteAppointment', { appointmentId });
+}

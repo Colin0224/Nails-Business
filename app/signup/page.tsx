@@ -24,7 +24,7 @@ const formSchema = z.object({
   email: z.string().email({ message: "Please enter a valid email." }),
   password: z.string().min(6, { message: "Password must be at least 6 characters." }),
   phone: z.string().min(10, { message: "Please enter a valid phone number." }),
-  instagramHandle: z.string().optional(),
+  instagramHandle: z.string().min(1, { message: "Instagram handle is required." }),
 });
 
 export default function SignUpPage() {
@@ -167,7 +167,7 @@ export default function SignUpPage() {
             name="instagramHandle"
             render={({ field }) => (
               <FormItem>
-                <FormLabel>Instagram Handle (Optional)</FormLabel>
+                <FormLabel>Instagram Handle</FormLabel>
                 <FormControl>
                   <Input placeholder="@yourusername" {...field} />
                 </FormControl>
